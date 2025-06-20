@@ -1,0 +1,26 @@
+{
+  "cli": {
+    "version": ">= 5.9.1",
+    "appVersionSource": "local",
+    "requireCommit": true
+  },
+  "build": {
+    "preview": {
+      "android": {
+        "buildType": "apk"
+      },
+      "distribution": "internal",
+      "developmentClient": false
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "ios": {
+        "resourceClass": "m-medium"
+      },
+      "distribution": "store",
+      "developmentClient": false
+    }
+  }
+}
