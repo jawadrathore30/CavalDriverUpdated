@@ -47,9 +47,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BlurView } from "expo-blur";
 import { distributeRideRequest, updateDriverStats, Driver } from '../utils/rideDistribution';
-// import { GOOGLE_MAPS_API_KEY } from "@env";
-// import { CONFIG } from '../utils/config';
-import { CONFIG, debugConfig } from '../utils/config';
+import { GOOGLE_MAPS_APIKEY } from "@env";
 import CavalLogo from "../assets/Caval_courrier_logo-removebg-preview.png";
 import { useTheme } from "../context/ThemeContext";
 
@@ -134,21 +132,6 @@ const HomeScreenWithMap = () => {
   const [rideCooldown, setRideCooldown] = useState(false);
   const [showStatusPopup, setShowStatusPopup] = useState(false);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
-
-  // In HomeScreenWithMap.js
-const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
-
-//   if (!GOOGLE_MAPS_API_KEY) {
-//   console.error("Google Maps API key is missing!");
-//   Alert.alert(
-//     "Configuration Error",
-//     "The app is missing required configuration. Please contact support.",
-//     [{ text: "OK" }]
-//   );
-//   return null;
-// }
-
-// Then use mapApiKey in your MapView configuration
 
   // -----------------------------------------------------------------
   // 2. Effects
@@ -522,7 +505,8 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
       rideInProgress,
       rideCooldown,
       driverType,
-      hasUnsubscribe: !!onSnapshotUnsubscribe.current
+      hasUnsubscribe: !!onSnapshotUnsubscribe.current,
+      currentUser: auth.currentUser?.uid
     });
 
     // Clean up existing subscription
@@ -544,22 +528,38 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
 
     console.log('Setting up new ride request subscription...');
 
-    // Get all available drivers
+    // Get all available drivers with enhanced debugging
     const getAvailableDrivers = async () => {
       try {
         const driversSnapshot = await getDocs(collection(db, "Drivers"));
         const drivers = [];
+        const currentUserId = auth.currentUser?.uid;
+        
+        console.log(`Total drivers in database: ${driversSnapshot.size}`);
         
         driversSnapshot.forEach(doc => {
           const data = doc.data();
-          console.log(`Driver ${doc.id} status:`, {
+          const isCurrentDriver = doc.id === currentUserId;
+          
+          console.log(`Driver ${doc.id}${isCurrentDriver ? ' (CURRENT)' : ''} status:`, {
             isOnline: data.isOnline,
+            isAvailable: data.isAvailable,
+            rideInProgress: data.rideInProgress,
             lastOnlineUpdate: data.lastOnlineUpdate,
-            location: data.latitude && data.longitude ? 'has location' : 'no location'
+            location: data.latitude && data.longitude ? 'has location' : 'no location',
+            driverType: data.driverType,
+            currentRideId: data.currentRideId
           });
           
-          // Only include drivers who are marked as online and have a valid location
-          if (data.isOnline && data.latitude && data.longitude) {
+          // Enhanced driver filtering - check multiple conditions
+          const hasValidLocation = data.latitude && data.longitude;
+          const isDriverOnline = data.isOnline === true;
+          const isDriverAvailable = data.isAvailable !== false; // Default to true if not set
+          const noRideInProgress = !data.rideInProgress;
+          const noCurrentRide = !data.currentRideId;
+          const matchesDriverType = data.driverType === driverType;
+          
+          if (isDriverOnline && hasValidLocation && isDriverAvailable && noRideInProgress && noCurrentRide && matchesDriverType) {
             drivers.push(new Driver(
               doc.id,
               { latitude: data.latitude, longitude: data.longitude },
@@ -567,10 +567,20 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
               data.lastRideTime ? new Date(data.lastRideTime) : null,
               true
             ));
+            console.log(`✓ Driver ${doc.id} added to available drivers`);
+          } else {
+            console.log(`✗ Driver ${doc.id} excluded:`, {
+              isOnline: isDriverOnline,
+              hasLocation: hasValidLocation,
+              isAvailable: isDriverAvailable,
+              noRideInProgress,
+              noCurrentRide,
+              matchesType: matchesDriverType
+            });
           }
         });
         
-        console.log(`Found ${drivers.length} online drivers with valid locations`);
+        console.log(`Found ${drivers.length} available drivers with valid locations and matching type: ${driverType}`);
         return drivers;
       } catch (error) {
         console.error("Error fetching available drivers:", error);
@@ -593,11 +603,12 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
       console.log('Received ride request snapshot:', {
         empty: snapshot.empty,
         size: snapshot.size,
-        docs: snapshot.docs.map(doc => doc.id)
+        docs: snapshot.docs.map(doc => ({ id: doc.id, status: doc.data().status }))
       });
 
       // If the snapshot is empty, hide the modal and clear the current ride request
       if (snapshot.empty) {
+        console.log('No waiting rides found');
         setIsModalVisible(false);
         setCurrentRideRequest(null);
         return;
@@ -605,6 +616,7 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
 
       // If the current ride offer is not in the snapshot, hide the modal and clear the current ride request
       if (currentRideRequestRef.current && !snapshot.docs.some(doc => doc.id === currentRideRequestRef.current.id)) {
+        console.log('Current ride request no longer in waiting status');
         setIsModalVisible(false);
         setCurrentRideRequest(null);
         return;
@@ -613,8 +625,17 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
       const docItem = snapshot.docs[0];
       const ride = { id: docItem.id, ...docItem.data() };
       
+      console.log('Processing ride request:', {
+        rideId: ride.id,
+        status: ride.status,
+        rideType: ride.rideType,
+        assignedDriver: ride.assignedDriver,
+        declinedDrivers: ride.declinedDrivers || []
+      });
+      
       // Hide the offer if the ride status is declined
       if (ride.status === 'declined') {
+        console.log('Ride is declined, hiding modal');
         setIsModalVisible(false);
         setCurrentRideRequest(null);
         return;
@@ -629,12 +650,34 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
         console.log('Ride distribution results:', {
           availableDrivers: availableDrivers.length,
           selectedDriver: selectedDriver?.id,
-          currentUser: auth.currentUser?.uid
+          currentUser: auth.currentUser?.uid,
+          isSelected: selectedDriver?.id === auth.currentUser?.uid
         });
 
         // Only show the ride request to the selected driver
         if (selectedDriver && selectedDriver.id === auth.currentUser?.uid) {
           console.log('This driver was selected for the ride');
+          
+          // Check if driver is still available (double-check)
+          const currentUser = auth.currentUser;
+          if (currentUser) {
+            try {
+              const driverDoc = await getDoc(doc(db, "Drivers", currentUser.uid));
+              if (driverDoc.exists()) {
+                const driverData = driverDoc.data();
+                if (!driverData.isOnline || driverData.rideInProgress || driverData.currentRideId) {
+                  console.log('Driver is no longer available:', {
+                    isOnline: driverData.isOnline,
+                    rideInProgress: driverData.rideInProgress,
+                    currentRideId: driverData.currentRideId
+                  });
+                  return;
+                }
+              }
+            } catch (error) {
+              console.error('Error checking driver availability:', error);
+            }
+          }
           
           // Fetch customer information from rideRequestsDriver collection
           try {
@@ -715,10 +758,12 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
     onSnapshotUnsubscribe.current = unsubscribe;
     return () => {
       console.log('Cleaning up ride request subscription');
-      unsubscribe();
-      onSnapshotUnsubscribe.current = null;
+      if (onSnapshotUnsubscribe.current) {
+        onSnapshotUnsubscribe.current();
+        onSnapshotUnsubscribe.current = null;
+      }
     };
-  }, [isOnline, rideInProgress, rideCooldown, driverType]);
+  }, [isOnline, rideInProgress, rideCooldown, driverType, fromLocation]);
 
   // -----------------------------------------------------------------
   // 9. Countdown Timer for Auto-Decline
@@ -1015,14 +1060,22 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
       // Get current location before updating status
       const currentLocation = await Location.getCurrentPositionAsync({});
       
-      // Update Firestore with new status and location
+      // Enhanced update data with all necessary fields
       const updateData = {
         isOnline: newStatus,
+        isAvailable: newStatus, // Ensure availability matches online status
+        rideInProgress: false, // Reset ride progress when going online
+        currentRideId: null, // Clear any current ride
         lastOnlineUpdate: new Date().toISOString(),
         latitude: currentLocation.coords.latitude,
         longitude: currentLocation.coords.longitude,
         lastLocationUpdate: new Date().toISOString()
       };
+
+      // If going offline, also set isAvailable to false
+      if (!newStatus) {
+        updateData.isAvailable = false;
+      }
 
       console.log('Updating driver status:', updateData);
       await updateDoc(driverRef, updateData);
@@ -1337,8 +1390,119 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
   }
 
   console.log('Rendering map with region:', region);
-  // console.log('Google Maps API Key:', GOOGLE_MAPS_API_KEY);
-  console.log('Google Maps API Key available:', !!CONFIG.GOOGLE_MAPS_API_KEY);
+  console.log('Google Maps API Key:', GOOGLE_MAPS_APIKEY);
+
+  // -----------------------------------------------------------------
+  // 16. Diagnostic Function for Driver Status Issues
+  // -----------------------------------------------------------------
+  const diagnoseDriverStatus = async () => {
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        console.error("No authenticated user found");
+        return;
+      }
+
+      console.log('=== DRIVER STATUS DIAGNOSTIC ===');
+      
+      // Check current driver document
+      const driverDoc = await getDoc(doc(db, "Drivers", currentUser.uid));
+      if (driverDoc.exists()) {
+        const driverData = driverDoc.data();
+        console.log('Current driver data:', {
+          isOnline: driverData.isOnline,
+          isAvailable: driverData.isAvailable,
+          rideInProgress: driverData.rideInProgress,
+          currentRideId: driverData.currentRideId,
+          driverType: driverData.driverType,
+          latitude: driverData.latitude,
+          longitude: driverData.longitude,
+          lastOnlineUpdate: driverData.lastOnlineUpdate,
+          lastLocationUpdate: driverData.lastLocationUpdate
+        });
+        
+        // Check for issues
+        const issues = [];
+        if (!driverData.isOnline) issues.push('Driver is not online');
+        if (driverData.isAvailable === false) issues.push('Driver is marked as unavailable');
+        if (driverData.rideInProgress) issues.push('Driver has ride in progress');
+        if (driverData.currentRideId) issues.push('Driver has current ride ID');
+        if (!driverData.driverType) issues.push('Driver type not set');
+        if (!driverData.latitude || !driverData.longitude) issues.push('Driver location not set');
+        
+        if (issues.length > 0) {
+          console.log('Issues found:', issues);
+          
+          // Auto-fix common issues
+          const fixData = {};
+          if (!driverData.isOnline) fixData.isOnline = true;
+          if (driverData.isAvailable === false) fixData.isAvailable = true;
+          if (driverData.rideInProgress) fixData.rideInProgress = false;
+          if (driverData.currentRideId) fixData.currentRideId = null;
+          
+          if (Object.keys(fixData).length > 0) {
+            console.log('Auto-fixing issues:', fixData);
+            await updateDoc(doc(db, "Drivers", currentUser.uid), fixData);
+            console.log('Issues fixed successfully');
+            
+            // Update local state
+            setIsOnline(true);
+            setRideInProgress(false);
+          }
+        } else {
+          console.log('No issues found with driver status');
+        }
+      } else {
+        console.error('Driver document does not exist');
+      }
+      
+      // Check for waiting rides
+      const waitingRidesQuery = query(
+        collection(db, "rideRequests"),
+        where("status", "==", "waiting"),
+        where("rideType", "==", driverType)
+      );
+      const waitingRidesSnapshot = await getDocs(waitingRidesQuery);
+      console.log(`Found ${waitingRidesSnapshot.size} waiting rides for type: ${driverType}`);
+      
+      waitingRidesSnapshot.forEach(doc => {
+        const rideData = doc.data();
+        console.log(`Ride ${doc.id}:`, {
+          assignedDriver: rideData.assignedDriver,
+          declinedDrivers: rideData.declinedDrivers || [],
+          pickupLat: rideData.pickupLat,
+          pickupLng: rideData.pickupLng
+        });
+      });
+      
+      console.log('=== END DIAGNOSTIC ===');
+    } catch (error) {
+      console.error('Error in driver status diagnostic:', error);
+    }
+  };
+
+  // Add diagnostic button to the UI (temporary for debugging)
+  const renderDiagnosticButton = () => {
+    if (__DEV__) {
+      return (
+        <TouchableOpacity
+          style={{
+            position: 'absolute',
+            top: 100,
+            right: 20,
+            backgroundColor: '#FF6F00',
+            padding: 10,
+            borderRadius: 5,
+            zIndex: 1000
+          }}
+          onPress={diagnoseDriverStatus}
+        >
+          <Text style={{ color: 'white', fontSize: 12 }}>Diagnose</Text>
+        </TouchableOpacity>
+      );
+    }
+    return null;
+  };
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
@@ -1966,6 +2130,7 @@ const mapApiKey = CONFIG.GOOGLE_MAPS_API_KEY;
           </Animated.View>
         </Animated.View>
       )}
+      {renderDiagnosticButton()}
     </SafeAreaView>
   );
 };

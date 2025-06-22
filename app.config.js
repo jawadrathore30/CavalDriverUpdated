@@ -2,12 +2,12 @@ import "dotenv/config"
 
 export default {
   expo: {
-    name: "Eco-share",
+    name: "Caval-Driver",
     slug: "Eco-share",
     owner: "zouhair123",
     version: "1.0.0",
     orientation: "portrait",
-    icon: "./assets/icon.png",
+    icon: "./assets/AppIcon.png",
     userInterfaceStyle: "light",
     scheme: "com.googleusercontent.apps.1007561335979-uiduf2a3h59mjcdassp5hl3rgljr5tes",
     splash: {
@@ -43,7 +43,7 @@ export default {
       package: "com.misscoding.ecoshare",
       versionCode: 122,
       adaptiveIcon: {
-        foregroundImage: "./assets/adaptive-icon.png",
+        foregroundImage: "./assets/AppIcon.png",
         backgroundColor: "#ffffff",
       },
       config: {
